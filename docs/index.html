@@ -1,1 +1,71 @@
-<!DOCTYPE html><html><body><h1>Prompt Profiler</h1><textarea id='in'></textarea><button onclick='calc()'>Calculate</button><pre id='out'></pre><script>function calc(){const t=document.getElementById('in').value;const tokens=Math.floor(t.split(' ').length*1.33);document.getElementById('out').innerText='Tokens: '+tokens+' | Est Cost: $'+(tokens/1000*0.002).toFixed(6);}</script></body></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LLM Prompt Cost Profiler, Compactor &amp; Model Router</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; background: #f8fafc; color: #0f172a; }
+    .card { background: #fff; border: 1px solid #cbd5e1; border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; }
+    textarea { width: 100%; height: 140px; font-family: monospace; padding: 0.5rem; border: 1px solid #94a3b8; border-radius: 6px; box-sizing: border-box; }
+    button { background: #0f172a; color: #fff; border: 0; padding: 0.6rem 1.1rem; border-radius: 6px; cursor: pointer; font-weight: 600; margin-top: 0.5rem; }
+    pre { background: #f1f5f9; padding: 0.85rem; border-radius: 8px; white-space: pre-wrap; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <h1>LLM Prompt Cost Profiler, Compactor &amp; Router</h1>
+  <p>100% offline zero-install tool: estimate tokens, compact noisy prompts safely, and pick the lowest-cost model tier.</p>
+  <div class="card">
+    <textarea id="in">Could you please help me to summarize these notes as JSON?
+Please kindly note that we only need title and date.
+Please kindly note that we only need title and date.
+Thank you very much in advance!</textarea>
+    <br /><button onclick="analyze()">Profile, Compact &amp; Route</button>
+  </div>
+  <div class="card">
+    <h3>Metrics &amp; Recommended Model Tier</h3>
+    <pre id="metrics"></pre>
+    <h3>Compacted Prompt</h3>
+    <pre id="compacted"></pre>
+  </div>
+  <script>
+    function estTokens(s) {
+      if (!s || !s.trim()) return 0;
+      return Math.max(1, Math.floor(s.trim().split(/\s+/).length * 1.33), Math.floor(s.trim().length / 4));
+    }
+    function analyze() {
+      const raw = document.getElementById('in').value;
+      const fences = [];
+      let masked = raw.replace(/```[\s\S]*?```/g, m => { fences.push(m); return `\n@@FENCE_${fences.length - 1}@@\n`; });
+      masked = masked.replace(/\b(please kindly note that|it is important to note that|as an ai language model,?|thank you very much in advance[.!]?|thank you in advance[.!]?|could you please help me to|in order to)\b/gi, '');
+      const seen = new Set(), outLines = [];
+      for (const ln of masked.split(/\r?\n/)) {
+        const s = ln.replace(/[ \t]+/g, ' ').trim();
+        if (!s) continue;
+        if (!s.startsWith('@@FENCE_') && s.length >= 16) {
+          const k = s.toLowerCase();
+          if (seen.has(k)) continue;
+          seen.add(k);
+        }
+        outLines.push(s.replace(/^[,;:\s]+/, ''));
+      }
+      let compacted = outLines.join('\n').trim();
+      fences.forEach((b, i) => { compacted = compacted.replace(`@@FENCE_${i}@@`, b); });
+      const origT = estTokens(raw), newT = Math.min(origT, estTokens(compacted));
+      const pct = origT > 0 ? (((origT - newT) / origT) * 100).toFixed(1) : '0.0';
+      const lower = raw.toLowerCase();
+      let score = 0.15;
+      if (origT > 250) score += 0.18;
+      if (/(```|def |class |traceback|refactor|pytest|sql)/.test(lower)) score += 0.30;
+      if (/(architecture|security audit|root cause|step by step|optimize)/.test(lower)) score += 0.35;
+      if (/(extract|format|summarize|json|csv|translate)/.test(lower) && score < 0.35) score -= 0.10;
+      score = Math.min(1, Math.max(0.05, score));
+      const tier = score >= 0.65 ? 'Frontier ($0.015/1k)' : score >= 0.35 ? 'Standard ($0.002/1k)' : 'Budget ($0.0005/1k)';
+      document.getElementById('metrics').textContent =
+        `Original Tokens: ${origT}\nCompacted Tokens: ${newT} (${pct}% saved)\nComplexity Score: ${score.toFixed(2)}\nRecommended Tier: ${tier}`;
+      document.getElementById('compacted').textContent = compacted;
+    }
+    analyze();
+  </script>
+</body>
+</html>
