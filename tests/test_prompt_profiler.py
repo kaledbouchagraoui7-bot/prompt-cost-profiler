@@ -3,7 +3,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from prompt_profiler import TokenProfiler, compact_prompt, recommend_model_route
+from prompt_profiler import TokenProfiler, compact_prompt, pack_directory_context, recommend_model_route
 
 
 def test_token_estimation():
@@ -98,4 +98,36 @@ def test_cli_compact_and_route_flags():
     )
     payload = json.loads(proc.stdout)
     assert "compaction" in payload and "routing" in payload
+
+
+def test_pack_directory_context_skips_ignored_dirs_and_profiles_tokens(tmp_path):
+    (tmp_path / "app.py").write_text("def greet():\n    return 'hi'\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("# Demo\n\nPlease kindly note that this is a demo.\n", encoding="utf-8")
+    ignored = tmp_path / "__pycache__"
+    ignored.mkdir()
+    (ignored / "junk.py").write_text("x = 1\n", encoding="utf-8")
+
+    res = pack_directory_context(tmp_path, cost_per_1k=0.002)
+    assert res["file_count"] == 2
+    assert "app.py" in res["files_included"]
+    assert "README.md" in res["files_included"]
+    assert "__pycache__/junk.py" not in res["files_included"]
+    assert "# Table of Contents" in res["packed_markdown"]
+    assert "```python" in res["packed_markdown"]
+    assert res["original_tokens"] >= res["compacted_tokens"] > 0
+
+
+def test_cli_dir_flag(tmp_path):
+    (tmp_path / "sample.py").write_text("x = 42\n", encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, "prompt_profiler.py", "--dir", str(tmp_path), "--route"],
+        cwd=str(Path(__file__).resolve().parent.parent),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    payload = json.loads(proc.stdout)
+    assert payload["file_count"] == 1
+    assert "routing" in payload
+    assert payload["original_tokens"] > 0
     assert payload["routing"]["recommended_tier"] == "budget"

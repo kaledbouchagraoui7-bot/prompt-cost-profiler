@@ -13,7 +13,26 @@ import argparse
 import hashlib
 import json
 import re
+from pathlib import Path
 from typing import Any
+
+SKIP_DIRS = {".git", ".venv", "venv", "__pycache__", "node_modules", ".pytest_cache", ".mypy_cache", "dist", "build"}
+EXT_LANG_MAP = {
+    ".py": "python",
+    ".js": "javascript",
+    ".ts": "typescript",
+    ".md": "markdown",
+    ".json": "json",
+    ".yml": "yaml",
+    ".yaml": "yaml",
+    ".toml": "toml",
+    ".sh": "bash",
+    ".ps1": "powershell",
+    ".html": "html",
+    ".css": "css",
+    ".sql": "sql",
+    ".txt": "text",
+}
 
 
 CODE_FENCE_RE = re.compile(r"```[\s\S]*?```")
@@ -232,16 +251,106 @@ class TokenProfiler:
         return recommend_model_route(text)
 
 
+def pack_directory_context(
+    dir_path: str | Path,
+    max_files: int = 40,
+    max_file_bytes: int = 65536,
+    cost_per_1k: float = 0.002,
+) -> dict[str, Any]:
+    """
+    Scan a local code folder (inspired by raphaelmansuy/code2prompt), pack a compact
+    Markdown prompt with Table of Contents and fenced code blocks, and compute
+    token/cost savings via `compact_prompt()`.
+    """
+    root = Path(dir_path).resolve()
+    if not root.exists() or not root.is_dir():
+        raise ValueError(f"Directory does not exist: {root}")
+
+    files_data: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*")):
+        if len(files_data) >= max_files:
+            break
+        if not path.is_file():
+            continue
+        if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
+            continue
+        ext = path.suffix.lower()
+        if ext not in EXT_LANG_MAP:
+            continue
+        try:
+            size = path.stat().st_size
+            if size > max_file_bytes:
+                continue
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        rel = path.relative_to(root).as_posix()
+        files_data.append({
+            "path": rel,
+            "extension": ext,
+            "language": EXT_LANG_MAP.get(ext, "text"),
+            "size": size,
+            "content": content.strip(),
+        })
+
+    toc = [f"- {item['path']}" for item in files_data]
+    sections: list[str] = []
+    for item in files_data:
+        sections.append(
+            f"## File: {item['path']}\n\n"
+            f"- Language: {item['language']} | Size: {item['size']} bytes\n\n"
+            f"```{item['language']}\n{item['content']}\n```"
+        )
+
+    packed_markdown = "# Table of Contents\n" + "\n".join(toc) + "\n\n" + "\n\n".join(sections)
+    compaction = compact_prompt(packed_markdown, cost_per_1k=cost_per_1k)
+    return {
+        "directory": str(root),
+        "file_count": len(files_data),
+        "files_included": [item["path"] for item in files_data],
+        "packed_markdown": packed_markdown,
+        "compacted_markdown": compaction["compacted_text"],
+        "original_tokens": compaction["original_tokens"],
+        "compacted_tokens": compaction["compacted_tokens"],
+        "tokens_saved": compaction["tokens_saved"],
+        "pct_saved": compaction["pct_saved"],
+        "original_cost": compaction["original_cost"],
+        "compacted_cost": compaction["compacted_cost"],
+        "cost_saved": compaction["cost_saved"],
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="LLM Cost Profiler, Compactor & Router")
     parser.add_argument("--text", help="Input prompt text")
+    parser.add_argument("--dir", help="Pack a local code directory into a compact Markdown prompt and profile savings")
     parser.add_argument("--compact", action="store_true", help="Compact prompt and report token/cost savings")
     parser.add_argument("--route", action="store_true", help="Recommend lowest-cost model tier by complexity")
     parser.add_argument("--cost-per-1k", type=float, default=0.002, help="Cost per 1k tokens in USD (default: 0.002)")
     args = parser.parse_args()
 
+    if args.dir:
+        packed = pack_directory_context(args.dir, cost_per_1k=args.cost_per_1k)
+        out: dict[str, Any] = {
+            "directory": packed["directory"],
+            "file_count": packed["file_count"],
+            "files_included": packed["files_included"],
+            "original_tokens": packed["original_tokens"],
+            "compacted_tokens": packed["compacted_tokens"],
+            "tokens_saved": packed["tokens_saved"],
+            "pct_saved": packed["pct_saved"],
+            "original_cost": packed["original_cost"],
+            "compacted_cost": packed["compacted_cost"],
+            "cost_saved": packed["cost_saved"],
+            "packed_markdown_preview": packed["packed_markdown"][:400],
+        }
+        if args.route:
+            out["routing"] = recommend_model_route(packed["compacted_markdown"])
+        print(json.dumps(out, indent=2))
+        return
+
     if not args.text:
-        print("Usage: python prompt_profiler.py --text 'your prompt here' [--compact] [--route]")
+        print("Usage: python prompt_profiler.py --text 'your prompt here' [--compact] [--route] OR --dir <folder>")
         return
 
     profiler = TokenProfiler(cost_per_1k=args.cost_per_1k)
