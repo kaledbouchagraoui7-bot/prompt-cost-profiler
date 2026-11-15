@@ -1,5 +1,7 @@
 # `prompt-cost-profiler`
 
+[![CI](https://github.com/kaledbouchagraoui7-bot/prompt-cost-profiler/actions/workflows/ci.yml/badge.svg)](https://github.com/kaledbouchagraoui7-bot/prompt-cost-profiler/actions/workflows/ci.yml)
+
 Zero-dependency local LLM Token Profiler, Prompt Compactor, and Complexity-Based Model Router ([Live Zero-Install Browser Demo](https://kaledbouchagraoui7-bot.github.io/prompt-cost-profiler/)).
 
 ## Features
